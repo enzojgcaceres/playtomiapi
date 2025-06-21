@@ -1,0 +1,17 @@
+# Ignorar la carpeta node_modules
+node_modules/
+
+# Ignorar archivos de entorno (opcional)
+.env
+.env.local
+
+# Ignorar archivos de logs y dependencias (opcional)
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Ignorar carpetas de compilación (opcional)
+dist/
+build/
+out/
