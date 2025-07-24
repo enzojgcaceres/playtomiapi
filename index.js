@@ -28,31 +28,81 @@ const loginAndGetToken = async () => {
   return response.data.access_token;
 };
 
-// Función para formatear hora de HH:MM:SS a HH:MM
-const formatTime = (timeString) => {
-  return timeString.substring(0, 5);
+const formatTime = (isoString) => {
+  const dateObj = new Date(isoString);
+  return dateObj.toLocaleTimeString([], { 
+    hour: '2-digit', 
+    minute: '2-digit',
+    hour12: false 
+  });
 };
 
-// Función para convertir fecha DD-MM-YYYY a YYYY-MM-DD
+// Función para convertir fecha DD-MM-YYYY a YYYY-MM-DD - ACTUALIZADA
 const convertDateFormat = (dateString) => {
+  // Si ya está en formato YYYY-MM-DD completo
   if (dateString.includes('-') && dateString.length === 10) {
     const parts = dateString.split('-');
-    // Si ya está en formato YYYY-MM-DD
     if (parts[0].length === 4) {
-      return dateString;
+      return dateString; // Ya está en formato correcto
     }
     // Si está en formato DD-MM-YYYY
     if (parts[2].length === 4) {
       return `${parts[2]}-${parts[1]}-${parts[0]}`;
     }
   }
+  
+  // NUEVO: Manejar formato DD-MM sin año
+  if (dateString.includes('-') && dateString.length === 5) {
+    const parts = dateString.split('-');
+    if (parts.length === 2) {
+      const day = parseInt(parts[0]);
+      const month = parseInt(parts[1]);
+      
+      // Validar que día y mes sean válidos
+      if (day >= 1 && day <= 31 && month >= 1 && month <= 12) {
+        const currentDate = new Date();
+        const currentYear = currentDate.getFullYear();
+        const currentMonth = currentDate.getMonth() + 1; // getMonth() devuelve 0-11
+        const currentDay = currentDate.getDate();
+        
+        let targetYear = currentYear;
+        
+        // Si el mes solicitado es menor que el actual, o
+        // si es el mismo mes pero el día ya pasó, usar el próximo año
+        if (month < currentMonth || 
+            (month === currentMonth && day < currentDay)) {
+          targetYear = currentYear + 1;
+        }
+        
+        // Excepción: Si estamos en diciembre y piden enero-noviembre del próximo año
+        // O si estamos en enero y piden diciembre del año actual
+        if (currentMonth === 12 && month <= 11) {
+          targetYear = currentYear + 1;
+        } else if (currentMonth === 1 && month === 12) {
+          targetYear = currentYear; // Diciembre del año actual
+        }
+        
+        // Formatear con ceros a la izquierda
+        const formattedMonth = month.toString().padStart(2, '0');
+        const formattedDay = day.toString().padStart(2, '0');
+        
+        return `${targetYear}-${formattedMonth}-${formattedDay}`;
+      }
+    }
+  }
+  
   return dateString;
 };
 
-// 🔧 NUEVA FUNCIÓN: construir start_time en formato ISO
+// NUEVA FUNCIÓN: construir start_time en formato ISO
+// const buildStartTime = (fecha, hora) => {
+//   const isoDate = convertDateFormat(fecha); // en formato YYYY-MM-DD
+//   return `${isoDate}T${hora}:00`; // se removio la Z en 00Z
+// };
+
 const buildStartTime = (fecha, hora) => {
-  const isoDate = convertDateFormat(fecha); // en formato YYYY-MM-DD
-  return `${isoDate}T${hora}:00Z`;
+  const isoDate = convertDateFormat(fecha);
+  return `${isoDate}T${hora}:00-06:00`; // Especifica timezone México GMT-6
 };
 
 // Función para validar formato de hora
@@ -67,79 +117,65 @@ const timeToMinutes = (time) => {
   return hours * 60 + minutes;
 };
 
-// Función para generar respuesta amigable para WhatsApp/Instagram
-const generateFriendlyResponse = (data, params) => {
-  const { date, startTime, endTime, format } = params;
-  
-  if (format === 'chat') {
-    let response = `🎾 *Disponibilidad de Canchas*\n`;
-    response += `📅 *Fecha:* ${date}\n`;
-    
-    if (startTime && endTime) {
-      response += `⏰ *Horario:* ${startTime} - ${endTime}\n`;
-    }
-    
-    response += `\n`;
-
-    if (data.length === 0) {
-      response += `❌ No hay canchas disponibles para este horario.\n`;
-      response += `💡 *Sugerencia:* Prueba con otro horario o fecha.`;
-      return response;
-    }
-
-    data.forEach((court, index) => {
-      response += `🏟️ *${court.cancha}*\n`;
-      
-      if (court.horarios.length === 0) {
-        response += `   ❌ Sin disponibilidad\n`;
-      } else {
-        court.horarios.forEach(slot => {
-          response += `   ✅ ${slot.time} (${slot.duration}min) - *$${slot.price}*  _(ID: ${slot.slot_id})_\n`;
-        });
-      }
-      
-      if (index < data.length - 1) {
-        response += `\n`;
-      }
-    });
-
-    response += `\n📞 *¿Quieres reservar?* ¡Contáctanos!`;
-    return response;
-  }
-  
-  return data; // Formato JSON original
+// Función para generar un external_id único
+const generateExternalId = () => {
+  const datePart = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+  const randomPart = Math.random().toString(36).substring(2, 8);
+  return `playtomic-${datePart}-${randomPart}`;
 };
 
-// Endpoint principal mejorado
 app.get('/availability', async (req, res) => {
   try {
     const token = await loginAndGetToken();
 
-    // Parámetros de consulta
-    let { date, startTime, endTime, format } = req.query;
+    // 1. Obtener y validar parámetros obligatorios
+    const { date, startTime, duration } = req.query;
     
-    // Usar fecha actual si no se proporciona
-    if (!date) {
-      date = new Date().toISOString().split('T')[0];
-    } else {
-      date = convertDateFormat(date);
+    // Validar que todos los parámetros obligatorios estén presentes
+    if (!date || !startTime || !duration) {
+      return res.json({
+        external_id: generateExternalId(),
+        message: "⚠️ Faltan parámetros obligatorios:\n\n" +
+                 "🔸 date: Fecha (YYYY-MM-DD o DD-MM-YYYY)\n" +
+                 "🔸 startTime: Hora inicial (HH:MM)\n" +
+                 "🔸 duration: Duración (60, 90 o 120)\n\n" +
+                 "Ejemplo: /availability?date=2025-06-27&startTime=15:00&duration=90"
+      });
     }
-
-    // Validar formato de horas si se proporcionan
-    if (startTime && !isValidTimeFormat(startTime)) {
-      return res.status(400).json({ 
-        error: 'Formato de hora inicial inválido. Use HH:MM (ej: 15:30)' 
+    
+    // Validar duración
+    if (![60, 90, 120].includes(parseInt(duration))) {
+      return res.json({
+        external_id: generateExternalId(),
+        message: "❌ Duración inválida. Valores aceptados: 60, 90 o 120\n\n" +
+                 "Ejemplo: /availability?duration=90"
+      });
+    }
+    const durationInt = parseInt(duration);
+    
+    // Validar formato de hora
+    if (!isValidTimeFormat(startTime)) {
+      return res.json({
+        external_id: generateExternalId(),
+        message: '❌ Formato de hora inválido. Use HH:MM (ej: 15:30)'
+      });
+    }
+    
+    // Convertir y validar fecha
+    const formattedDate = convertDateFormat(date);
+    if (!isValidDate(formattedDate)) {
+      return res.json({
+        external_id: generateExternalId(),
+        message: '❌ Fecha inválida. Use YYYY-MM-DD o DD-MM-YYYY'
       });
     }
 
-    if (endTime && !isValidTimeFormat(endTime)) {
-      return res.status(400).json({ 
-        error: 'Formato de hora final inválido. Use HH:MM (ej: 19:00)' 
-      });
-    }
-
+    // 2. Calcular endTime automáticamente (startTime + 2 horas)
+    const endTime = addMinutesToTime(startTime, 120);
+    
+    // 3. Obtener datos de Playtomic
     const tenantId = 'ab9c7555-3ba5-4b57-bbf8-6c7e7f344178';
-    const url = `https://playtomic.com/api/v1/availability?user_id=me&tenant_id=${tenantId}&sport_id=PADEL&start_min=${date}T00:00:00&start_max=${date}T23:59:59`;
+    const url = `https://playtomic.com/api/v1/availability?user_id=me&tenant_id=${tenantId}&sport_id=PADEL&start_min=${formattedDate}T00:00:00&start_max=${formattedDate}T23:59:59`;
 
     const response = await axios.get(url, {
       headers: {
@@ -148,74 +184,162 @@ app.get('/availability', async (req, res) => {
       }
     });
 
-    const rawData = response.data;
+    // 4. FUNCIÓN CORREGIDA: Extraer precio numérico
+    const extractPrice = (priceString) => {
+      if (typeof priceString === 'number') return priceString;
+      if (typeof priceString === 'string') {
+        const match = priceString.match(/[\d.]+/);
+        return match ? parseFloat(match[0]) : 0;
+      }
+      return 0;
+    };
 
-    // Procesar datos con filtros de tiempo
-    const processedData = rawData.map((court, i) => {
-      console.dir(court.slots[0], { depth: null });
-      let filteredSlots = court.slots;
+    // 5. FUNCIÓN CORREGIDA: Crear datetime completo
+    const createFullDateTime = (startDate, startTime) => {
+      return `${startDate}T${startTime}`;
+    };
 
-      // Filtrar por rango de tiempo si se proporciona
-      if (startTime || endTime) {
-        filteredSlots = court.slots.filter(slot => {
-          const slotTime = formatTime(slot.start_time);
-          const slotMinutes = timeToMinutes(slotTime);
-          
-          let isInRange = true;
-          
-          if (startTime) {
-            const startMinutes = timeToMinutes(startTime);
-            isInRange = isInRange && slotMinutes >= startMinutes;
-          }
-          
-          if (endTime) {
-            const endMinutes = timeToMinutes(endTime);
-            isInRange = isInRange && slotMinutes <= endMinutes;
-          }
-          
-          return isInRange;
+    // 6. PROCESAMIENTO CORREGIDO: Agrupar por resource_id y procesar
+    const courtMap = new Map();
+    
+    response.data.forEach(item => {
+      const resourceId = item.resource_id;
+      
+      if (!courtMap.has(resourceId)) {
+        courtMap.set(resourceId, {
+          resource_id: resourceId,
+          slots: []
         });
       }
+      
+      // Procesar cada slot del item actual
+      item.slots.forEach(slot => {
+        const fullDateTime = createFullDateTime(item.start_date, slot.start_time);
+        courtMap.get(resourceId).slots.push({
+          ...slot,
+          start_time_full: fullDateTime,
+          price_numeric: extractPrice(slot.price),
+          id: `${resourceId}_${item.start_date}_${slot.start_time}_${slot.duration}` // Generar ID único
+        });
+      });
+    });
+
+    // Convertir Map a Array
+    const courtsData = Array.from(courtMap.values());
+
+    // 7. FILTRADO CORREGIDO: Filtrar por duración y rango horario
+    const processedData = courtsData.map((court, i) => {
+      const filteredSlots = court.slots.filter(slot => {
+        // Validar duración
+        if (slot.duration !== durationInt) return false;
+        
+        // Crear objeto Date para comparar horarios
+        const slotDateTime = new Date(slot.start_time_full);
+        const slotHours = slotDateTime.getHours();
+        const slotMinutes = slotDateTime.getMinutes();
+        const [startHours, startMinutes] = startTime.split(':').map(Number);
+        
+        // Calcular diferencia en minutos
+        const diffMinutes = (slotHours - startHours) * 60 + (slotMinutes - startMinutes);
+        
+        return diffMinutes >= 0 && diffMinutes <= 120; // Dentro de las 2 horas siguientes
+      });
 
       return {
         cancha: `Cancha ${i + 1}`,
         resource_id: court.resource_id,
-        fecha: court.start_date,
         horarios: filteredSlots.map(slot => ({
-          time: formatTime(slot.start_time),
-          duration: slot.duration,
-          price: slot.price,
+          time: slot.start_time, // Ya viene en formato HH:MM:SS
+          price: slot.price_numeric,
           slot_id: slot.id,
-          start_time_iso: slot.start_time
+          start_time_iso: slot.start_time_full,
+          duration: slot.duration
         }))
       };
     });
 
-    // Generar respuesta según el formato solicitado
-    const finalResponse = generateFriendlyResponse(processedData, {
-      date,
+    // 8. Generar respuesta optimizada para Instagram
+    const instagramResponse = generateInstagramResponse(processedData, {
+      date: formattedDate,
       startTime,
-      endTime,
-      format
+      duration: durationInt
     });
-
-    if (format === 'chat') {
-      res.json({ 
-        message: finalResponse,
-        data: processedData 
-      });
-    } else {
-      res.json(processedData);
-    }
-
+    
+    // 9. Enviar respuesta
+    res.json({
+      external_id: generateExternalId(),
+      message: instagramResponse,
+      debug: {
+        total_courts: courtsData.length,
+        raw_data_sample: response.data.slice(0, 2), // Para debugging
+        processed_sample: processedData.slice(0, 2)
+      }
+    });
+    
   } catch (err) {
-    console.error('Error:', err.message);
-    res.status(500).json({ 
-      error: 'Error procesando disponibilidad',
-      details: err.message 
+    console.error('Error completo:', err);
+    res.json({ 
+      external_id: generateExternalId(),
+      message: `❌ Error: ${err.message || 'Por favor intenta con otros parámetros'}`,
+      error_details: err.response?.data || err.message
     });
   }
 });
+
+// Función auxiliar: sumar minutos a una hora
+function addMinutesToTime(time, minutesToAdd) {
+  const [hours, minutes] = time.split(':').map(Number);
+  const totalMinutes = hours * 60 + minutes + minutesToAdd;
+  const newHours = Math.floor(totalMinutes / 60) % 24;
+  const newMinutes = totalMinutes % 60;
+  
+  return `${String(newHours).padStart(2, '0')}:${String(newMinutes).padStart(2, '0')}`;
+}
+
+// Función auxiliar: validar fecha
+function isValidDate(dateString) {
+  return !isNaN(Date.parse(dateString));
+}
+
+
+// Función para generar respuesta Instagram - ACTUALIZADA
+const generateInstagramResponse = (data, params) => {
+  const { date, startTime, duration } = params;
+  
+  let response = `🎾 ${date} | ${startTime} | ${duration}min\n\n`;
+  
+  let availableCount = 0;
+  
+  data.forEach(court => {
+    if (court.horarios.length > 0) {
+      // Obtener horarios únicos y ordenarlos
+      const uniqueTimes = [...new Set(court.horarios.map(slot => {
+        // Convertir HH:MM:SS a HH:MM para mostrar
+        return slot.time.substring(0, 5);
+      }))].sort();
+      
+      response += `🏟 ${court.cancha.split(' ')[1]}: `;
+      
+      // Mostrar máximo 2 horarios por cancha
+      if (uniqueTimes.length > 2) {
+        response += `${uniqueTimes[0]}, ${uniqueTimes[1]}... (+${uniqueTimes.length - 2})\n`;
+      } else {
+        response += `${uniqueTimes.join(', ')}\n`;
+      }
+      
+      availableCount++;
+    }
+  });
+  
+  if (availableCount === 0) {
+    return "❌ No hay canchas disponibles\n💡 Prueba otra hora o duración";
+  }
+  
+  // Añadir instrucciones para más detalles
+  response += `\n💡 Para ver precios puedes generar una reserva`;
+  
+  return response;
+};
 
 // Endpoint para obtener disponibilidad resumida por horas
 app.get('/availability-summary', async (req, res) => {
@@ -310,74 +434,127 @@ app.get('/availability-summary', async (req, res) => {
   }
 });
 
-// función para generar enlace de reserva
 // const generateBookingLink = (tenantId, resourceId, startTime, duration, slotId) => {
-//   const encodedTime = startTime.substring(0, 16).replace(':', '%3A');
-//   return `https://playtomic.com/checkout/booking?s=${tenantId}~${resourceId}~${encodedTime}~${duration}~${slotId}`;
-// };
-
-// const generateBookingLink = (tenantId, resourceId, startTime, duration, slotId) => {
-//   const encodedTime = startTime.substring(0, 16).replace(':', '%3A');
+//   // 1) Tomamos YYYY-MM-DDTHH:MM
+//   const clean = startTime.substring(0, 16);
+//   // 2) Codificamos todo el string, incluyendo los dos puntos
+//   const encodedTime = encodeURIComponent(clean);
+//   // 3) Armamos la base del parámetro s=
 //   const base = `${tenantId}~${resourceId}~${encodedTime}~${duration}`;
-//   return slotId ? 
-//     `https://playtomic.com/checkout/booking?s=${base}~${slotId}` :
-//     `https://playtomic.com/checkout/booking?s=${base}`;
+//   // 4) Devolvemos el link, añadiendo slotId si existe
+//   return slotId
+//     ? `https://playtomic.com/checkout/booking?s=${base}~${slotId}`
+//     : `https://playtomic.com/checkout/booking?s=${base}`;
 // };
 
+// FUNCIÓN CORREGIDA: generar link de reserva
 const generateBookingLink = (tenantId, resourceId, startTime, duration, slotId) => {
-  // 1) Tomamos YYYY-MM-DDTHH:MM
-  const clean = startTime.substring(0, 16);
-  // 2) Codificamos todo el string, incluyendo los dos puntos
-  const encodedTime = encodeURIComponent(clean);
-  // 3) Armamos la base del parámetro s=
+  // 1) Asegurar que startTime no tenga 'Z' al final
+  let cleanTime = startTime;
+  if (startTime.endsWith('Z')) {
+    cleanTime = startTime.slice(0, -1); // Remover 'Z'
+  }
+  
+  // 2) Tomamos YYYY-MM-DDTHH:MM (sin segundos ni timezone)
+  const timeForUrl = cleanTime.substring(0, 16);
+  
+  // 3) Codificamos para URL
+  const encodedTime = encodeURIComponent(timeForUrl);
+  
+  // 4) Armamos la base del parámetro s=
   const base = `${tenantId}~${resourceId}~${encodedTime}~${duration}`;
-  // 4) Devolvemos el link, añadiendo slotId si existe
+  
+  // 5) Devolvemos el link
   return slotId
     ? `https://playtomic.com/checkout/booking?s=${base}~${slotId}`
     : `https://playtomic.com/checkout/booking?s=${base}`;
 };
 
-
-// 
+// ENDPOINT CORREGIDO: /generate-booking-link (GET) 
 app.get('/generate-booking-link', async (req, res) => {
   try {
     const { resource_id, slot_id, start_time, duration } = req.query;
 
     if (!resource_id || !start_time || !duration) {
-  return res.status(400).json({ error: 'Faltan parámetros obligatorios (resource_id, start_time, duration)' });
-}
-    
-    // if (!resource_id || !slot_id || !start_time || !duration) {
-    //   return res.status(400).json({ error: 'Parámetros incompletos' });
-    // }
+      return res.status(400).json({ 
+        error: 'Faltan parámetros obligatorios (resource_id, start_time, duration)' 
+      });
+    }
+
+    // CORREGIDO: limpiar start_time si tiene 'Z'
+    let cleanStartTime = start_time;
+    if (start_time.endsWith('Z')) {
+      cleanStartTime = start_time.slice(0, -1);
+    }
 
     const bookingLink = generateBookingLink(
       'ab9c7555-3ba5-4b57-bbf8-6c7e7f344178', // tenant_id
       resource_id,
-      start_time,
+      cleanStartTime,
       duration,
       slot_id
     );
 
-    res.json({ booking_link: bookingLink });
+    res.json({ 
+      booking_link: bookingLink,
+      debug: {
+        original_start_time: start_time,
+        cleaned_start_time: cleanStartTime
+      }
+    });
+    
   } catch (err) {
     res.status(500).json({ error: 'Error generando enlace' });
   }
 });
 
-// endpoint para generar el link 
+// booking-link pruebas postman
+// app.get('/generate-booking-link', async (req, res) => {
+//   try {
+//     const { resource_id, slot_id, start_time, duration } = req.query;
+
+//     if (!resource_id || !start_time || !duration) {
+//   return res.status(400).json({ error: 'Faltan parámetros obligatorios (resource_id, start_time, duration)' });
+// }
+    
+//     // if (!resource_id || !slot_id || !start_time || !duration) {
+//     //   return res.status(400).json({ error: 'Parámetros incompletos' });
+//     // }
+
+//     const bookingLink = generateBookingLink(
+//       'ab9c7555-3ba5-4b57-bbf8-6c7e7f344178', // tenant_id
+//       resource_id,
+//       start_time,
+//       duration,
+//       slot_id
+//     );
+
+//     res.json({ booking_link: bookingLink });
+//   } catch (err) {
+//     res.status(500).json({ error: 'Error generando enlace' });
+//   }
+// });
+
+
+// ENDPOINT CORREGIDO: /generate-reservation-link (POST)
 app.post('/generate-reservation-link', async (req, res) => {
   try {
     const { courtNumber, date, reservationTime, duration } = req.body;
 
     if (!courtNumber || !date || !reservationTime || !duration) {
-      return res.status(400).json({ error: 'Faltan parámetros requeridos' });
+      return res.status(400).json({ 
+        error: 'Faltan parámetros requeridos',
+        required: ['courtNumber', 'date', 'reservationTime', 'duration']
+      });
     }
 
     const token = await loginAndGetToken();
-
     const tenantId = 'ab9c7555-3ba5-4b57-bbf8-6c7e7f344178';
-    const availabilityUrl = `https://playtomic.com/api/v1/availability?user_id=me&tenant_id=${tenantId}&sport_id=PADEL&start_min=${date}T00:00:00&start_max=${date}T23:59:59`;
+    
+    // Convertir fecha al formato correcto
+    const formattedDate = convertDateFormat(date);
+    
+    const availabilityUrl = `https://playtomic.com/api/v1/availability?user_id=me&tenant_id=${tenantId}&sport_id=PADEL&start_min=${formattedDate}T00:00:00&start_max=${formattedDate}T23:59:59`;
 
     const response = await axios.get(availabilityUrl, {
       headers: {
@@ -388,14 +565,44 @@ app.post('/generate-reservation-link', async (req, res) => {
 
     const allCourts = response.data;
 
+    // Agrupar por resource_id (igual que en /availability)
+    const courtMap = new Map();
+    
+    allCourts.forEach(item => {
+      const resourceId = item.resource_id;
+      
+      if (!courtMap.has(resourceId)) {
+        courtMap.set(resourceId, {
+          resource_id: resourceId,
+          slots: []
+        });
+      }
+      
+      item.slots.forEach(slot => {
+        const fullDateTime = `${item.start_date}T${slot.start_time}`;
+        courtMap.get(resourceId).slots.push({
+          ...slot,
+          start_time_full: fullDateTime
+        });
+      });
+    });
+
+    const courtsArray = Array.from(courtMap.values());
+
     const courtIndex = courtNumber - 1;
-    if (courtIndex < 0 || courtIndex >= allCourts.length) {
-      return res.status(400).json({ error: 'Número de cancha inválido' });
+    if (courtIndex < 0 || courtIndex >= courtsArray.length) {
+      return res.status(400).json({ 
+        error: 'Número de cancha inválido',
+        available_courts: courtsArray.length,
+        requested: courtNumber
+      });
     }
 
-    const selectedCourt = allCourts[courtIndex];
+    const selectedCourt = courtsArray[courtIndex];
     const resource_id = selectedCourt.resource_id;
-    const start_time = buildStartTime(date, reservationTime);
+    
+    // CORREGIDO: usar buildStartTime sin 'Z'
+    const start_time = buildStartTime(formattedDate, reservationTime);
 
     const bookingLink = generateBookingLink(
       tenantId,
@@ -404,12 +611,72 @@ app.post('/generate-reservation-link', async (req, res) => {
       duration
     );
 
-    res.json({ booking_link: bookingLink });
+    res.json({ 
+      booking_link: bookingLink,
+      debug: {
+        original_date: date,
+        formatted_date: formattedDate,
+        reservation_time: reservationTime,
+        start_time_generated: start_time,
+        resource_id: resource_id,
+        court_number: courtNumber
+      }
+    });
+
   } catch (err) {
     console.error('Error generando link de reserva:', err.message);
-    res.status(500).json({ error: 'Error interno', details: err.message });
+    res.status(500).json({ 
+      error: 'Error interno', 
+      details: err.message 
+    });
   }
 });
+
+// endpoint para generar el link 
+// app.post('/generate-reservation-link', async (req, res) => {
+//   try {
+//     const { courtNumber, date, reservationTime, duration } = req.body;
+
+//     if (!courtNumber || !date || !reservationTime || !duration) {
+//       return res.status(400).json({ error: 'Faltan parámetros requeridos' });
+//     }
+
+//     const token = await loginAndGetToken();
+
+//     const tenantId = 'ab9c7555-3ba5-4b57-bbf8-6c7e7f344178';
+//     const availabilityUrl = `https://playtomic.com/api/v1/availability?user_id=me&tenant_id=${tenantId}&sport_id=PADEL&start_min=${date}T00:00:00&start_max=${date}T23:59:59`;
+
+//     const response = await axios.get(availabilityUrl, {
+//       headers: {
+//         Authorization: `Bearer ${token}`,
+//         'x-requested-with': 'com.playtomic.web'
+//       }
+//     });
+
+//     const allCourts = response.data;
+
+//     const courtIndex = courtNumber - 1;
+//     if (courtIndex < 0 || courtIndex >= allCourts.length) {
+//       return res.status(400).json({ error: 'Número de cancha inválido' });
+//     }
+
+//     const selectedCourt = allCourts[courtIndex];
+//     const resource_id = selectedCourt.resource_id;
+//     const start_time = buildStartTime(date, reservationTime);
+
+//     const bookingLink = generateBookingLink(
+//       tenantId,
+//       resource_id,
+//       start_time,
+//       duration
+//     );
+
+//     res.json({ booking_link: bookingLink });
+//   } catch (err) {
+//     console.error('Error generando link de reserva:', err.message);
+//     res.status(500).json({ error: 'Error interno', details: err.message });
+//   }
+// });
 
 
 // Endpoint de ayuda
